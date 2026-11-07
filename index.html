@@ -389,18 +389,21 @@ function newGroup(){return {at:0,
   l2:{card:null,redraw:1,useTechs:[],techIdea:'',principles:[],checked:false,ideas:[],poster:{name:'',principle:'',how:'',effect:'',risk:'',img:'',style:'cute'},postits:[],why:''},
   l3:{answers:{},pitch:'',aiqs:[],invest:{},nott:'',nottWhy:'',r1:'',r2:'',help:'',wrong:''}
 }}
-function newTeacher(){return {auction:[],events:[],flipped:null,curTech:null,round:1,order:[],pi:0,grid:{},rotRounds:3,imported:{},recStep:{}}}
+function newTeacher(){return {at:0,auction:[],events:[],flipped:null,curTech:null,round:1,order:[],pi:0,grid:{},rotRounds:3,imported:{},recStep:{}}}
 let S=blank();
 try{const r=localStorage.getItem(KEY); if(r) S=Object.assign(blank(),JSON.parse(r));}catch(e){}
 let saveTimer=null;
-function save(now){
-  if(S.role==='group'&&S.groupNo)G().at=Date.now();
+const HASH={};
+function stamp(obj,key,noBump){const c=Object.assign({},obj);delete c.at;const h=JSON.stringify(c);if(HASH[key]===undefined||noBump){HASH[key]=h;return}if(HASH[key]!==h){HASH[key]=h;obj.at=Date.now()}}
+function save(now,noBump){
+  if(S.role==='group'&&S.groupNo&&S.cls)stamp(G(),'g'+S.cls+'-'+S.groupNo,noBump);
+  if(S.role==='teacher'&&S.cls)stamp(TCH(),'t'+S.cls,noBump);
   clearTimeout(saveTimer);
   const go=()=>{try{localStorage.setItem(KEY,JSON.stringify(S));}catch(e){toast('이 기기에 저장하지 못했어요. 그림 파일을 더 작은 것으로 바꿔 보세요.');}pushRemote();};
   if(now) go(); else saveTimer=setTimeout(go,300);
 }
-function G(){const k=S.cls+'-'+S.groupNo; if(!S.groups[k]) S.groups[k]=newGroup(); const g=S.groups[k]; if(!g.l2.useTechs)g.l2.useTechs=[]; return g;}
-function TCH(){if(!S.teachers)S.teachers={};const k=String(S.cls||0);if(!S.teachers[k])S.teachers[k]=newTeacher();const t=S.teachers[k];if(!t.imported)t.imported={};if(!t.recStep)t.recStep={};return t;}
+function G(){const k=S.cls+'-'+S.groupNo; if(!S.groups[k]) S.groups[k]=newGroup(); const g=S.groups[k]; if(!g.l2.useTechs)g.l2.useTechs=[]; if(HASH['g'+k]===undefined)stamp(g,'g'+k); return g;}
+function TCH(){if(!S.teachers)S.teachers={};const k=String(S.cls||0);if(!S.teachers[k])S.teachers[k]=newTeacher();const t=S.teachers[k];if(!t.imported)t.imported={};if(!t.recStep)t.recStep={};if(HASH['t'+k]===undefined)stamp(t,'t'+k);return t;}
 const hpw=x=>{let h=5381;for(const c of String(x))h=((h<<5)+h+c.codePointAt(0))|0;return 'k'+(h>>>0).toString(36)};
 let TOK=null;
 function teacherOK(){let v=TOK;try{v=localStorage.getItem('civ-reset.tk')||TOK}catch(e){}return v===hpw(TEACHER_PASSWORD)}
@@ -430,8 +433,8 @@ function joinRoom(){
   if(!roomId()){setPresence();return}
   const key=roomId()+'|'+S.role+'|'+(S.role==='group'?(S.groupNo||''):'');
   if(SYNC.key===key){setPresence();pushNow();return}
-  SYNC.key=key;unsubs.forEach(u=>{try{u()}catch(e){}});unsubs=[];
-  REMOTE={};REMOTE_IMG={};LIVE_T=null;online={};synced0=false;lastG='';lastImg=null;lastT='';
+  SYNC.key=key;SYNC.ready=false;unsubs.forEach(u=>{try{u()}catch(e){}});unsubs=[];
+  REMOTE={};REMOTE_IMG={};LIVE_T=null;online={};synced0=false;lastG='';lastImg=null;lastT='';SYNC.lastFull='';
   const r=roomId();
   if(SYNC.mode==='firebase'){
     const base=SYNC.fdb.ref('rooms/'+r);
@@ -453,7 +456,19 @@ function joinRoom(){
       if(S.role==='group'&&S.groupNo)unsubs.push(db.doc(base+'/teacher/state').onSnapshot(doc=>gotTeacher(doc.exists?doc.data():null),err));
     }catch(e){}
   }
-  setPresence();pushNow();
+  setPresence();const myKey=key;
+  restoreOwn().catch(e=>console.warn('불러오기 실패',e)).then(()=>{if(SYNC.key!==myKey)return;SYNC.ready=true;applyTeacher();softRender();pushNow()});
+}
+function readRemote(col,id){const r=roomId();
+  if(SYNC.mode==='firebase')return SYNC.fdb.ref('rooms/'+r+'/'+(col==='tfull'?'tfull':col+'/'+id)).once('value').then(sn=>sn.val());
+  return SYNC.cdb.doc('rooms/'+r+'/'+col+'/'+id).get().then(d=>d.exists?d.data():null)}
+function fill(base,o){if(!o||typeof o!=='object'||Array.isArray(o))return o===undefined?base:o;const out=Object.assign({},base);Object.keys(o).forEach(k=>{out[k]=(base&&typeof base[k]==='object'&&base[k]&&!Array.isArray(base[k]))?fill(base[k],o[k]):o[k]});return out}
+async function restoreOwn(){
+  if(S.role==='group'&&S.groupNo){const n=S.groupNo,d=await readRemote('groups','g'+n);
+    if(d&&d.json&&(+d.at||0)>(G().at||0)){const st=fill(newGroup(),JSON.parse(d.json));const im=await readRemote('imgs','g'+n);st.l2.poster.img=(im&&im.img)||'';st.at=+d.at;
+      S.groups[S.cls+'-'+n]=st;stamp(st,'g'+S.cls+'-'+n,true);lastG='';lastImg=null;save(true);toast('☁️ 저장된 모둠 기록을 불러왔어요')}}
+  if(S.role==='teacher'&&S.cls){const d=await readRemote('tfull','state');
+    if(d&&d.json&&(+d.at||0)>(TCH().at||0)){const st=fill(newTeacher(),JSON.parse(d.json));st.at=+d.at;S.teachers[String(S.cls)]=st;stamp(st,'t'+S.cls,true);lastT='';save(true);toast('☁️ 저장된 교사 기록을 불러왔어요')}}
 }
 function setPresence(){
   if(SYNC.mode!=='firebase'||dbState!=='on')return;
@@ -471,15 +486,16 @@ function gotImg(d){if(d&&d.n){REMOTE_IMG[d.n]=d.img||'';softRender()}}
 function gotTeacher(d){try{LIVE_T=d&&d.json?JSON.parse(d.json):null}catch(e){LIVE_T=null}applyTeacher();softRender()}
 function pushRemote(){if(!SYNC.mode)return;clearTimeout(pushT);pushT=setTimeout(pushNow,1000)}
 function write(col,id,body){const r=roomId();
-  if(SYNC.mode==='firebase')return SYNC.fdb.ref('rooms/'+r+'/'+(col==='teacher'?'teacher':col+'/'+id)).set(body);
+  if(SYNC.mode==='firebase')return SYNC.fdb.ref('rooms/'+r+'/'+(col==='teacher'||col==='tfull'?col:col+'/'+id)).set(body);
   if(SYNC.mode==='claude')return SYNC.cdb.doc('rooms/'+r+'/'+col+'/'+id).set(body);
   return Promise.reject(new Error('no sync'))}
 function pushNow(){
-  if(!SYNC.mode||dbState!=='on'||!roomId())return;
+  if(!SYNC.mode||dbState!=='on'||!roomId()||!SYNC.ready)return;
   if(S.role==='group'&&S.groupNo){const n=S.groupNo,g=G(),c=JSON.parse(JSON.stringify(g)),img=c.l2.poster.img||'';c.l2.poster.img='';const json=JSON.stringify(c);
     if(json!==lastG)write('groups','g'+n,{n,at:g.at||Date.now(),json}).then(()=>{lastG=json},()=>{});
     if(img!==lastImg)write('imgs','g'+n,{n,img}).then(()=>{lastImg=img},()=>{})}
-  if(S.role==='teacher'){const t=TCH(),json=JSON.stringify({auction:t.auction,events:t.events,curTech:t.curTech||null});
+  if(S.role==='teacher'){const t=TCH(),full=JSON.stringify(t);if(full!==SYNC.lastFull)write('tfull','state',{at:t.at||Date.now(),json:full}).then(()=>{SYNC.lastFull=full},()=>{});
+    const json=JSON.stringify({auction:t.auction,events:t.events,curTech:t.curTech||null});
     if(json!==lastT)write('teacher','state',{at:Date.now(),json}).then(()=>{lastT=json},()=>{})}
 }
 function applyTeacher(){
@@ -488,7 +504,7 @@ function applyTeacher(){
   const mine=(LIVE_T.auction||[]).filter(a=>a.group===n).map(a=>({id:a.tech,price:a.price}));
   const evs=(LIVE_T.events||[]).filter(id=>E(id));
   const had=g.l1.techs.map(t=>t.id),hadE=g.l1.events.slice();
-  if(JSON.stringify(mine)!==JSON.stringify(g.l1.techs)||JSON.stringify(evs)!==JSON.stringify(hadE)){g.l1.techs=mine;g.l1.events=evs;save()}
+  if(JSON.stringify(mine)!==JSON.stringify(g.l1.techs)||JSON.stringify(evs)!==JSON.stringify(hadE)){g.l1.techs=mine;g.l1.events=evs;save(false,true)}
   const first=!synced0;synced0=true;
   if(first||S.view!=='lesson'||S.lesson!==1)return;
   mine.filter(t=>!had.includes(t.id)).forEach(t=>queuePop({type:'win',id:t.id,price:t.price}));
@@ -902,7 +918,7 @@ const A={
  'go-lessons':el=>{if(S.view==='lesson'&&el.classList.contains('primary')){sfx('win');burstAt(el,['🎉','⭐','🏆','✨'],16)}S.view='home';S.lesson=null},
  sound:()=>{S.sound=!S.sound;if(S.sound)sfx('pop')},
  scene:(el,e)=>{sfx('pop');burst(e.clientX,e.clientY,['🔥','⚡','💡','🌾','⚙️','✨','🌐','🔬'],10);return false},
- role:el=>{const v=el.dataset.v;if(v==='teacher'&&!teacherOK()){ui.pw=true;sfx('click');return 'ui'}ui.pw=false;S.role=v;if(v==='teacher')TCH();sfx('pop');joinRoom()},
+ role:el=>{const v=el.dataset.v;if(v==='teacher'&&!teacherOK()){ui.pw=true;sfx('click');return 'ui'}ui.pw=false;S.role=v;if(v==='group'&&ACTIVE)S.cls=ACTIVE;if(v==='teacher')TCH();sfx('pop');joinRoom()},
  'pw-ok':()=>{const i=document.getElementById('pw-in');if(i&&i.value===TEACHER_PASSWORD){TOK=hpw(TEACHER_PASSWORD);try{localStorage.setItem('civ-reset.tk',TOK)}catch(e){}ui.pw=false;S.role='teacher';TCH();sfx('win');toast('🔓 교사 화면이 열렸어요');joinRoom()}else{sfx('bad');if(i){i.value='';i.classList.remove('shake');void i.offsetWidth;i.classList.add('shake')}toast('🔒 비밀번호가 달라요');return false}},
  'pw-cancel':()=>{ui.pw=false;return 'ui'},
  lock:()=>{TOK=null;try{localStorage.removeItem('civ-reset.tk')}catch(e){}S.role=null;S.view='home';S.lesson=null;sfx('click');toast('🔒 교사 화면을 잠갔어요');joinRoom()},
